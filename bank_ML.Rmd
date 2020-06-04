@@ -1,0 +1,411 @@
+---
+title: "Bank Marketing Data- Machine Learning Project Phase 2"
+author: "Piyush Bhatt"
+date: "9 November 2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+```{r}
+library(tidyverse)
+library(reshape2) # manipulate data structure
+library(dplyr)
+library(spFSR)
+library(randomForest)
+library(kknn)
+library(plotrix)
+library(rpart)
+library(rlang)
+library(ggvis)
+library(plyr)
+library(rJava)
+library(FSelector)
+library(forcats)
+library(readr)
+library(randomForestSRC)
+library(caret)
+library(mlbench)
+library(ggplot2)
+library(Hmisc)
+library(mosaic)
+library(knitr)
+```
+
+## Phase 2
+```{r}
+rm(list = ls())
+```
+
+## Data Prep and exploration
+```{r}
+bank_data <- read.csv("C:/Users/bhatt/Desktop/Resume And Imp Documents/RMIT University/Semester 3/Machine Learning/Phase-2/bank/bank-full.csv", 
+                        sep = ";", stringsAsFactors = TRUE)
+# Data Exploration
+bank_data <- subset(bank_data, bank_data$poutcome != "other")
+
+bank_data$education <- plyr::revalue(bank_data$education, c("unknown" = "other"))
+bank_data$job <- plyr::revalue(bank_data$job, c("unknown" = "other"))
+# Check missing value in Numeric columns
+num_var <- select_if(bank_data, is.numeric)
+colSums(sapply(num_var, is.na))
+
+# Check missing values in Categorical Columns
+cat_var <- select_if(bank_data, is.factor)
+colSums(sapply(cat_var, is.na))
+
+# Summarize the numerical variables
+summary(num_var)
+
+# Summarize the categorical variables
+summary(cat_var$poutcome)
+
+# Explore the target variable
+table(bank_data$y)
+
+# Visualize the balance to check the outliers and remove them if any
+outliers <- boxplot(bank_data$balance, horizontal = TRUE, plot = FALSE)$out
+bank_data <- bank_data[-which(bank_data$balance %in% outliers),]
+boxplot(bank_data$balance, horizontal = TRUE)
+
+# Remove the column contact as it has no impact on target variable y
+bank_data$contact <- NULL 
+# Keep records which has call duration of more than 5 seconds
+bank_data <- subset.data.frame(bank_data, bank_data$duration > 5)
+# Drop the records for customer with education as other
+bank_data <- subset(bank_data, bank_data$education != "other")
+cat_var <- select_if(bank_data, is.factor)
+summary(cat_var)
+
+# Rename the y variable as target
+names(bank_data)[length(bank_data)] <- "Target"
+
+# Data Exploration
+# Distribution of age
+p <- ggplot(bank_data, aes(x = age))
+p + geom_bar(color = "white",
+             fill  = "yellow") + theme_minimal() + labs(title = "Distribution of Age") + 
+  geom_density()
+# Distribution of Balance
+hist(bank_data$balance, fill = "red", col = "red", 
+     main = "Distribution of Balance",
+     xlab = "Balance(in Euro)")
+
+# Relationship between age and balance
+d <- ggplot(bank_data, aes(x = age, y = balance)) 
+d +  geom_point(color = "blue") + labs(title = "Relationship b/w Age and balance") + 
+  geom_smooth(method = "lm", se = F)
+
+# Visualization of duration and campaign
+boxplot(bank_data$duration, main = "Distribution of Duration of call",
+        ylab = "Duration in Seconds")
+boxplot(bank_data$campaign, main = "Distribution of Campaign")
+
+# Relationship b/w duration and campaign with response rate
+
+ggplot(bank_data, aes(x = bank_data$duration, y = bank_data$campaign)) + 
+  geom_point(aes(col = Target)) + labs(title = "Relationship b/w Duration and no of call",
+                                       x = "Duration of call (in Seconds)",
+                                       y = "No of calls made during Campaign")
+
+bank_data$Target <- ifelse(bank_data$Target == "yes", 1,0)
+table(bank_data$job)
+bank_data$job <- gsub("admin.","admin",bank_data$job, fixed = TRUE)
+bank_data$job <- gsub("blue-collar","blue_collar",bank_data$job, fixed = TRUE)
+bank_data$job <- gsub("self-employed","self_employed",bank_data$job, fixed = TRUE)
+sub_data <- bank_data[,c("age","balance","duration", "campaign", "pdays","previous", "Target")]
+bank_data$job <- as.factor(bank_data$job)
+
+
+# Visualise target variable with respect to different different predictors
+ggplot(data = bank_data, aes(x = age, y = bank_data$balance, fill = Target)) + 
+  geom_bar(stat = "identity", position = position_dodge()) +
+  labs(title = "Customer Response on Age and Balance",
+       y = "Balance(in Euro)") + scale_color_manual(values = c("#999999","##56B4E9"))
+
+bank_data$Target <- ifelse(bank_data$Target == 1, "Subscribed","Not Subscribed")
+e <- ggplot(data = bank_data, aes(x = education, y = balance, fill = Target))
+e + geom_boxplot() + labs(y = "Balance(in Euro)",
+                          x = "Education",
+                          title = "Analysis of Subscription ",
+                          subtitle = "based on Education, balance and marital status") + 
+  theme(legend.title = element_blank()) + facet_wrap( ~ marital)
+
+f <- ggplot(bank_data, aes(x = loan, y = balance, fill = Target))
+f + geom_bar(stat = "identity", position = position_dodge()) + 
+  labs(title = "Subscription rate",
+       subtitle = "Based on Job, Balance, and loan") + facet_wrap(~ job)
+```
+## Phase 2 codes
+### Scaling of Numerical Variable 
+```{r}
+colnames(num_var)
+y <- bank_data[,c(16)]
+bank_data <- bank_data[,c(1:ncol(bank_data)-1)]
+bank_data_norm <- normalizeFeatures(bank_data, method = "standardize", 
+                                    cols = colnames(num_var))
+```
+### One hot encoding of categorical variables
+```{r}
+bank_data_encode <- dummyVars("~.", data = bank_data_norm)
+bank_data_encode <- data.frame(predict(bank_data_encode, newdata = bank_data_norm))
+bank_data_encode <- cbind(bank_data_encode, y)
+colnames(bank_data_encode)[ncol(bank_data_encode)] <- c("Target")
+colnames(bank_data_encode)
+```
+```{r}
+bank_data_encode <- bank_data_encode[sample(nrow(bank_data_encode),500),]
+```
+
+## Feature Selection and Ranking
+```{r}
+weights <- random.forest.importance(Target ~ ., data = bank_data_encode,
+                                    importance.type = 1)
+rank <- data.frame(features = rownames(weights),
+                   importance = weights$attr_importance)
+p1 <- ggplot(data = rank[which(rank$importance > 0.5),],
+             aes(x = reorder(features, 
+                             importance),
+                             y = importance,
+                             fill = importance)) + coord_flip() + 
+            geom_bar(stat = "identity", width = 0.25) +
+            geom_col(position = "dodge") + 
+            scale_fill_gradient(low = "green",
+                                high = "green4",
+                                space = "Lab",
+                                guide = FALSE) +
+  labs(title = "Feature Ranking using random Forest",
+       x = NULL,
+       y = NULL)
+p1
+```
+
+Clearly the most important feature is Duration, follwed by month.mar, day, age and so on.
+
+# Balancing dataset
+```{r}
+x <- data.frame(100*round(table(bank_data_encode$Target)/length(bank_data_encode$Target),2))
+x
+```
+Since our dataset has 89% of Not subscribed data, which suggests that our datset is highly imbalanced and it will have severe effect on the accuracy of our models.
+So we will balance our data by using synthetic data generation apporach.
+
+```{r}
+library(ROSE)
+bank_data_balanced <- ROSE(Target ~ ., data = bank_data_encode, seed = 1)$data
+table(bank_data_balanced$Target)
+```
+```{r}
+data.frame(100*round(table(bank_data_balanced$Target)/length(bank_data_balanced$Target),2))
+```
+Now the data has 50 50 ratio for Not subscribed and subscribed outcome.
+
+## Data Splicing
+We will split our data in train and test dataset in the ratio of 80-20. i.e 80% of the data will be used to train our models and rest 20% will be used to test the model acurracy.
+```{r}
+# Split the data into test and train in 80 20 ratio
+set.seed(101)
+sample <- sample.int(n = nrow(bank_data_balanced), 
+                     size = floor(0.80 * nrow(bank_data_balanced)), replace = F)
+train <- bank_data_balanced[sample,]
+test <- bank_data_balanced[-sample,]
+```
+
+## Classification task
+```{r}
+task_train <- makeClassifTask(data = train, target = "Target")
+task_test <- makeClassifTask(data = test, target = "Target")
+```
+
+## Check task
+```{r}
+task_train
+```
+<br/>
+task_train gives us a picture of training data but with a problem of considering NOt Subscribed as Positive class, so let's convert the positive class to subscribed.
+```{r}
+task_train <- makeClassifTask(data = train,target = "Target",positive = "Subscribed")
+task_train
+```
+## Set up 10 fold cross validation
+```{r}
+# 10 fold cross Cross Validation 
+cv <- makeResampleDesc("CV", iters = 5L)
+```
+
+**---------------------------------------------------------------------------**
+**---------------------------------------------------------------------------**
+## Decision Tree:
+```{r}
+getParamSet("classif.rpart")
+# Learner Tree
+bank_dt.learn <- makeLearner("classif.rpart", predict.type = "prob", fix.factors.prediction = TRUE)
+bank_dt.learn
+dt_control <- makeTuneControlGrid()
+```
+"MinSplit: number of observation in a node for split to take place"
+"Minbucket: min number of observation"
+cp : complexity parametr should be set low to avoid overfitting
+**---------------------------------------------------------------------------**
+**---------------------------------------------------------------------------**
+## K- Nearest Neighbour(KNN)
+```{r}
+getParamSet("classif.kknn")
+bank_knn.learn <- makeLearner("classif.kknn", predict.type = "prob", fix.factors.prediction = TRUE)
+bank_knn.learn
+```
+**---------------------------------------------------------------------------**
+**---------------------------------------------------------------------------**
+## Random forest
+```{r}
+getParamSet("classif.randomForest")
+bank_rf.learn <- makeLearner("classif.randomForest", predict.type = "prob", fix.factors.prediction = TRUE)
+bank_rf.learn$par.vals <- list(importance = TRUE)
+bank_rf.learn
+```
+
+**---------------------------------------------------------------------------**
+**---------------------------------------------------------------------------**
+## Decision Tree
+```{r}
+bank_dt.tree  <- mlr::train(bank_dt.learn, task_train)
+bank_dt.tree
+```
+## KNN Model Model
+```{r}
+bank_mod.knn <- mlr::train(bank_knn.learn, task_train)
+bank_mod.knn
+```
+## Random Forest
+```{r}
+bank.mod.rf <- mlr::train(bank_rf.learn, task_train)
+bank.mod.rf
+```
+
+## 5 fold cross validation
+```{r}
+checks <- list(mmce, tpr, fnr, fpr)
+bench <- benchmark(learners = list(bank_dt.learn, 
+                                   bank_rf.learn, 
+                                   bank_knn.learn), task_train, cv, checks)
+```
+
+```{r}
+getBMRAggrPerformances(bench)
+```
+
+## Decision tree
+```{r}
+dt_par <- makeParamSet(
+  makeDiscreteParam("cp", values = seq(0,0.002,0.0005)),
+  makeIntegerParam("minsplit", lower = 2, upper = 10),
+  makeDiscreteParam("maxdepth", values = c(10,20,30))
+)
+ctrl <- makeTuneControlRandom(maxit = 5)
+bank_dt_tune <- makeTuneWrapper(bank_dt.learn, cv, mmce, dt_par, ctrl)
+print(bank_dt_tune)
+```
+```{r}
+bank_dt.trn <- mlr::train(bank_dt_tune, task_train)
+bank_dt.trn
+```
+
+
+
+HYper Fine tuning
+## KNN
+```{r}
+knn_par <- makeParamSet(
+  makeIntegerParam("k", lower = 2, upper = 10),
+  makeDiscreteParam("kernel",values = c("rectangular", "optimal"))
+  )
+ctrl <- makeTuneControlRandom(maxit = 5)
+bank.knn.tune <- makeTuneWrapper(bank_knn.learn, cv, mmce, knn_par, ctrl)
+
+print(bank.knn.tune)
+```
+```{r}
+bank.knn.mod <- mlr::train(bank.knn.tune, task_train)
+```
+```{r}
+bank.knn.mod
+```
+
+
+## Random Forest
+```{r}
+rf_par <- makeParamSet(
+  makeDiscreteParam("ntree", values = c(100,200, 300, 400, 500))
+)
+bank_rf_tune <- makeTuneWrapper(bank_rf.learn, cv, mmce, rf_par,ctrl)
+print(bank_rf_tune)
+```
+```{r}
+bank.rf.mod.t <- mlr::train(bank_rf_tune, task_train)
+bank.rf.mod.t
+```
+
+
+## Benchmarking
+```{r}
+bench1 <- benchmark(tasks = task_train, 
+                    learners = list(bank_dt_tune,bank.knn.tune,bank_rf_tune))
+```
+
+```{r}
+getBMRAggrPerformances(bench1)
+```
+
+```{r}
+plotBMRRanksAsBarChart(bench1)
+```
+
+##  get all the predcictions
+## Decision Tree
+```{r}
+plotBMRBoxplots(bench1)
+
+```
+## Model Stats
+```{r}
+prediction <- getBMRPredictions(bench1)
+dtree_predict <- prediction$train$classif.rpart.tuned
+calculateConfusionMatrix(dtree_predict)
+```
+
+```{r}
+prediction <- getBMRPredictions(bench1)
+rf_predict <- prediction$train$classif.kknn.tuned
+calculateConfusionMatrix(rf_predict)
+```
+
+```{r}
+prediction <- getBMRPredictions(bench1)
+knn_predict <- prediction$train$classif.kknn.tuned
+calculateConfusionMatrix(knn_predict)
+```
+
+
+```{r}
+cur <- generateThreshVsPerfData(list(kknn = knn_predict, DT = dtree_predict, RF = rf_predict),
+                                measures = list(fpr, tpr))
+plotROCCurves(cur)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
